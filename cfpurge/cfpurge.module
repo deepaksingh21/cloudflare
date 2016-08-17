@@ -32,7 +32,7 @@ function cfpurge_admin_settings_form() {
   $form['cfpurge_api_url'] = array(
     '#type' => 'textfield',
     '#title' => t('CloudFlare API URL'),
-    '#default_value' => variable_get('cfpurge_api_url', 'https://www.cloudflare.com/api_json.html'),
+    '#default_value' => variable_get('cfpurge_api_url', 'https://api.cloudflare.com/client/v4/'),
     '#description' => t("Enter the URL for CloudFlare's API, clear the field to use the default URL."),
     '#required' => 1,
   );

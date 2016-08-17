@@ -24,11 +24,13 @@ function cfpurge_urls($cfpurge_urls) {
     $url_cache = array();
   }
 
-  // Info required for each purge request.
-  $params["a"]        = "zone_file_purge";
-  $params["tkn"]      = variable_get('cfpurge_api_key', '');
-  $params["email"]    = variable_get('cfpurge_email', '');
-  $params["z"]        = variable_get('cfpurge_zone', '');
+   // Info required for each purge request.
+   $params["api_key"] = variable_get('cfpurge_api_key', '');
+   $params["email"] = variable_get('cfpurge_email', '');
+   $params["zone"] = variable_get('cfpurge_zone', '');
+   // Add URL identifier to support V4
+   $params['identifier'] = variable_get('cfpurge_zone_identifier', get_zone_identifier($params));
+    
 
   // Attach the obove info to each URL.
   foreach ($cfpurge_urls as $url) {
@@ -92,19 +94,33 @@ function cfpurge_serial_request($urls) {
   // Initialize a curl request for each URL.
   foreach ($urls as $key => $url) {
 
+    if (empty($url['identifier'])) {
+        return $url;
+    }
+    $api = variable_get('cfpurge_api_url', 'https://api.cloudflare.com/client/v4/') . 'zones/' . $url['identifier'] . '/purge_cache';
+    $api_params = array(
+      'purge_everything' => true
+    );
+
+    $headers = array();
+    $headers[] = 'X-Auth-Key: ' . $url['api_key'];
+    $headers[] = 'X-Auth-Email: ' . $url['email'];
+    $headers[] = 'Content-Type: application/json';
+
     $curl_cfpurge = curl_init();
 
-    curl_setopt($curl_cfpurge, CURLOPT_URL, variable_get('cfpurge_api_url', 'https://www.cloudflare.com/api_json.html'));
-    curl_setopt($curl_cfpurge, CURLOPT_RETURNTRANSFER, 1);
-    curl_setopt($curl_cfpurge, CURLOPT_POST, 1);
-    curl_setopt($curl_cfpurge, CURLOPT_POSTFIELDS, $url);
+    curl_setopt($curl_cfpurge, CURLOPT_URL, $api);
+    curl_setopt($curl_cfpurge, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($curl_cfpurge, CURLOPT_CUSTOMREQUEST, 'DELETE');
+    curl_setopt($curl_cfpurge, CURLOPT_POSTFIELDS, drupal_json_encode($api_params));
+    curl_setopt($curl_cfpurge, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($curl_cfpurge, CURLOPT_TIMEOUT, 5);
     curl_setopt($curl_cfpurge, CURLOPT_FOLLOWLOCATION, TRUE);
     curl_setopt($curl_cfpurge, CURLOPT_AUTOREFERER, TRUE);
     curl_setopt($curl_cfpurge, CURLOPT_SSL_VERIFYPEER, FALSE);
 
-    $response = curl_exec($curl_cfpurge);
-    $body = array_pop(explode("\r\n\r\n", $response));
+    $response = explode("\r\n\r\n", curl_exec($curl_cfpurge));
+    $body = array_pop($response);
 
     $info = curl_getinfo($curl_cfpurge);
     $urls[$key]['http_code'] = $info['http_code'];
@@ -125,13 +141,26 @@ function cfpurge_serial_request($urls) {
  *   Array of purge requests along with their responses after purging.
  */
 function cfpurge_parallel_request($urls){
-  $api = variable_get('cfpurge_api_url', 'https://www.cloudflare.com/api_json.html');
   $mh = curl_multi_init();
   $curl_array = array();
   foreach($urls as $i => $url) {
+    $api = variable_get('cfpurge_api_url', 'https://api.cloudflare.com/client/v4/') . 'zones/' . $url['identifier'] . '/purge_cache';
+    $api_params = array(
+      'purge_everything' => true
+    );
+
+    $headers = array();
+    $headers[] = 'X-Auth-Key: ' . $url['api_key'];
+    $headers[] = 'X-Auth-Email: ' . $url['email'];
+    $headers[] = 'Content-Type: application/json';
     $curl_array[$i] = curl_init($api);
     curl_setopt($curl_array[$i], CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($curl_array[$i], CURLOPT_POSTFIELDS, $url);
+    curl_setopt($curl_array[$i], CURLOPT_CUSTOMREQUEST, 'DELETE');
+    curl_setopt($curl_array[$i], CURLOPT_POSTFIELDS, drupal_json_encode($api_params));
+    curl_setopt($curl_array[$i], CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($curl_array[$i], CURLOPT_FOLLOWLOCATION, TRUE);
+    curl_setopt($curl_array[$i], CURLOPT_AUTOREFERER, TRUE);
+    curl_setopt($curl_array[$i], CURLOPT_SSL_VERIFYPEER, FALSE);
     curl_multi_add_handle($mh, $curl_array[$i]);
   }
   $running = NULL;
@@ -181,11 +210,11 @@ function cfpurge_logging($responses) {
   $purges = array();
   $errors = array();
   foreach ($responses as $response) {
-    if ($response['http_code'] == 200 && $response['content']['result'] == 'success') {
+    if ($response['http_code'] == 200 && $response['content']['success'] == true) {
       $purges[] = $response['url'];
     }
-    elseif ($response['http_code'] == 200 && $response['content']['result'] != 'success') {
-      $errors[] = $response['url'] . ' -- ' . $response['content']['msg'];
+    elseif ($response['http_code'] == 200 && $response['content']['result'] != true) {
+      $errors[] = $response['url'] . ' -- ' . $response['content']['errors'][0]['message'];
     }
     else {
       $errors[] = 'Error, There was a problem connecting to CloudFlare, here\'s the HTTP error code: ' . $response['http_code'];
@@ -215,5 +244,44 @@ function cfpurge_logging($responses) {
         ),
         $severity = WATCHDOG_ERROR
       );
+  }
+}
+
+/**
+ * Issue get Zone identifier using curl requests from cloudflare.
+ *
+ * @param array $domain
+ *   domain name to be sent using curl.
+ *
+ * @return array
+ *   Zone identifier along with their responses.
+ */
+function get_zone_identifier($parms) {
+  $api = variable_get('cfpurge_api_url', 'https://api.cloudflare.com/client/v4/') . 'zones';
+  $api_params = array(
+    'name' => $parms['zone']
+  );
+
+  $headers = array();
+  $headers[] = 'X-Auth-Key: ' . $parms['api_key'];
+  $headers[] = 'X-Auth-Email: ' . $parms['email'];
+  $headers[] = 'Content-Type: application/json';
+
+  $ch = curl_init();
+  curl_setopt($ch, CURLOPT_URL, $api);
+  curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'GET');
+  curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+  curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($api_params));
+  curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+  $response = json_decode(curl_exec($ch));
+
+  curl_close($ch);
+  if ($response->success == 'true') {
+    return $response->result[0]->id;
+  }
+  else {
+    watchdog(
+      "cfpurge", "Failed attempt to get Zone identifier for '%url' with CURL using '%api' . ", array('%url' => $parms['zone'], '%api' => $api), WATCHDOG_ERROR);
   }
 }
