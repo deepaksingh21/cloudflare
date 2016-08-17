@@ -33,6 +33,7 @@ function cfpurge_uninstall() {
   variable_del('cfpurge_api_key');
   variable_del('cfpurge_email');
   variable_del('cfpurge_zone');
+  variable_del('cfpurge_zone_identifier');
   variable_del('cfpurge_parallel');
   variable_del('cfpurge_url_prefix');
 }
